@@ -6,6 +6,21 @@ const config = () => readConfig({ TELEGRAM_BOT_TOKEN: 'test-token', TELEGRAM_CHA
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
 const item = { id: 42, title: 'Scarpe Nike', price: { amount: '20', currency_code: 'EUR' }, size_title: '42', brand_title: 'Nike' };
 
+test('La diagnostica non richiede Telegram e non invia notifiche', async () => {
+  const cfg = readConfig({}, false);
+  const monitor = createMonitor(cfg, async url => {
+    assert.ok(!url.includes('telegram'));
+    return url.endsWith('/') ? new Response('homepage') : json({ items: [item] });
+  });
+  assert.deepEqual(await monitor.inspect(), { items: 1, fields: Object.keys(item), priceFields: ['amount', 'currency_code'] });
+  assert.equal(monitor.notified.size, 0);
+});
+
+test('La diagnostica segnala strutture di risposta inattese', async () => {
+  const monitor = createMonitor(readConfig({}, false), async url => url.endsWith('/') ? new Response('homepage') : json({ unexpected: [] }));
+  await assert.rejects(monitor.inspect(), /items assente/);
+});
+
 test('Rinnova la sessione dopo 401 e notifica una sola volta con tutti i campi', async () => {
   let sessions = 0;
   let searches = 0;
@@ -17,9 +32,12 @@ test('Rinnova la sessione dopo 401 e notifica una sola volta con tutti i campi',
     }
     if (url.endsWith('/')) {
       sessions++;
-      return new Response('homepage', { headers: { 'Set-Cookie': `session=s${sessions}; Path=/; Secure; HttpOnly` } });
+      return new Response('homepage', { headers: { 'Set-Cookie': `session=s${sessions}; Domain=.vinted.it; Path=/; Secure; HttpOnly` } });
     }
     searches++;
+    assert.equal(new URL(url).origin, 'https://api.vinted.it');
+    assert.equal(new URL(url).pathname, '/svc-catalogue/items');
+    assert.match(new URL(url).searchParams.get('global_search_session_id'), /^[0-9a-f-]{36}$/);
     assert.equal(new URL(url).searchParams.get('order'), 'newest_first');
     assert.equal(new URL(url).searchParams.get('search_text'), 'nike');
     assert.equal(options.headers.Cookie, `session=s${sessions}`);

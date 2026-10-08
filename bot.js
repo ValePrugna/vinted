@@ -2,10 +2,11 @@ import 'dotenv/config';
 import cron from 'node-cron';
 import { CookieJar } from 'tough-cookie';
 import { pathToFileURL } from 'node:url';
+import { randomUUID } from 'node:crypto';
 
 const USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
-export function readConfig(env = process.env) {
+export function readConfig(env = process.env, requireTelegram = true) {
   const number = (name, fallback) => {
     const value = env[name]?.trim() ? Number(env[name]) : fallback;
     if (!Number.isFinite(value) || value < 0) throw new Error(`${name}: numero non negativo richiesto`);
@@ -13,13 +14,17 @@ export function readConfig(env = process.env) {
   };
   const base = new URL(env.VINTED_BASE_URL || 'https://www.vinted.it');
   if (base.protocol !== 'https:' || base.username || base.password) throw new Error('VINTED_BASE_URL deve essere un URL HTTPS senza credenziali');
-  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) throw new Error('Configura TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID in .env');
+  // Il catalogo osservato sul sito italiano usa un host API separato.
+  const catalog = new URL(env.VINTED_CATALOG_URL || `https://${base.hostname.replace(/^www\./, 'api.')}/svc-catalogue/items`);
+  if (catalog.protocol !== 'https:' || catalog.username || catalog.password || catalog.search || catalog.hash) throw new Error('VINTED_CATALOG_URL deve essere un URL HTTPS senza credenziali o parametri');
+  if (catalog.hostname.replace(/^(www|api)\./, '') !== base.hostname.replace(/^(www|api)\./, '')) throw new Error('Il catalogo deve appartenere allo stesso dominio Vinted della homepage');
+  if (requireTelegram && (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID)) throw new Error('Configura TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID in .env');
   const schedule = env.CRON_SCHEDULE || '*/30 * * * * *';
   if (!cron.validate(schedule)) throw new Error('CRON_SCHEDULE non valido');
   const perPage = number('PER_PAGE', 20);
   if (!Number.isInteger(perPage) || perPage < 1 || perPage > 96) throw new Error('PER_PAGE deve essere un intero tra 1 e 96');
   return {
-    baseUrl: base.origin, token: env.TELEGRAM_BOT_TOKEN, chatId: env.TELEGRAM_CHAT_ID,
+    baseUrl: base.origin, catalogUrl: catalog.href, token: env.TELEGRAM_BOT_TOKEN, chatId: env.TELEGRAM_CHAT_ID,
     searchText: env.SEARCH_TEXT || '', priceTo: number('PRICE_TO', 40),
     order: env.ORDER || 'newest_first', perPage, schedule,
     resalePrice: env.ESTIMATED_RESALE_PRICE?.trim() ? number('ESTIMATED_RESALE_PRICE', 0) : null,
@@ -67,8 +72,8 @@ export function createMonitor(config, fetchFn = fetch) {
 
   async function getItems() {
     if (!sessionReady) await refreshSession();
-    const url = new URL('/api/v2/catalog/items', config.baseUrl);
-    url.search = new URLSearchParams({ search_text: config.searchText, price_to: String(config.priceTo), order: config.order, per_page: String(config.perPage), page: '1' }).toString();
+    const url = new URL(config.catalogUrl);
+    url.search = new URLSearchParams({ search_text: config.searchText, price_to: String(config.priceTo), order: config.order, per_page: String(config.perPage), page: '1', global_search_session_id: randomUUID() }).toString();
     let response = await vintedRequest(url.href, 'application/json');
     if (response.status === 401) {
       await response.arrayBuffer();
@@ -125,19 +130,38 @@ export function createMonitor(config, fetchFn = fetch) {
       running = false;
     }
   }
-  return { check, notified };
+  // Diagnostica senza Telegram: espone solo conteggi e nomi dei campi.
+  async function inspect() {
+    const items = await getItems();
+    const first = items[0];
+    return {
+      items: items.length,
+      fields: first ? Object.keys(first) : [],
+      priceFields: first && typeof first.price === 'object' && first.price !== null ? Object.keys(first.price) : [],
+    };
+  }
+  return { check, notified, inspect };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    const config = readConfig();
+    const diagnostic = process.argv.includes('--check');
+    const config = readConfig(process.env, !diagnostic);
     const monitor = createMonitor(config);
-    const task = cron.schedule(config.schedule, monitor.check);
-    console.log(`Monitoraggio avviato: ${config.searchText}, prezzo massimo ${config.priceTo}`);
-    void monitor.check();
-    for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { task.stop(); process.exit(0); });
+    if (diagnostic) {
+      const result = await monitor.inspect();
+      console.log(`Catalogo raggiunto. Articoli restituiti: ${result.items}`);
+      console.log(`Campi articolo: ${result.fields.join(', ') || '(nessun articolo)'}`);
+      console.log(`Campi prezzo: ${result.priceFields.join(', ') || '(prezzo semplice o assente)'}`);
+    } else {
+      const task = cron.schedule(config.schedule, monitor.check);
+      console.log(`Monitoraggio avviato: ${config.searchText}, prezzo massimo ${config.priceTo}`);
+      void monitor.check();
+      for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { task.stop(); process.exit(0); });
+    }
   } catch (error) {
-    console.error(error.message);
+    // Errori fetch possono includere URL: non stampare dettagli di rete sensibili.
+    console.error(error instanceof TypeError ? 'Richiesta fallita: verifica connessione e accesso ai domini Vinted.' : error.message);
     process.exitCode = 1;
   }
 }
