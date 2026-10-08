@@ -1,6 +1,6 @@
 # Monitor Vinted con notifiche Telegram
 
-Tutorial passo per passo: [PDF in italiano](docs/tutorial-vinted.pdf) oppure [versione testuale](docs/tutorial.md). Include spiegazione del codice, configurazione Windows, diagnostica e limiti verificati.
+Laboratorio di programmazione per studenti ITS: [PDF in italiano](docs/tutorial-vinted.pdf) oppure [versione testuale](docs/tutorial.md). Costruisce il monitor progressivamente con JavaScript, HTTP, async/await, stato e test. Include [esempi eseguibili](docs/laboratorio), 13 esercizi e soluzioni.
 
 Bot Node.js con commenti in italiano: cerca articoli, rinnova la sessione dopo HTTP 401 e invia notifiche Telegram senza duplicare gli ID già confermati nella stessa esecuzione.
 

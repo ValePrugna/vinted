@@ -1,177 +1,392 @@
-# Costruire un bot Vinted con Node.js
+# Programmare un bot: laboratorio JavaScript e Node.js
 
-Guida pratica per principianti • Versione del 8 ottobre 2026
+Dal primo filtro al monitor asincrono • Percorso per studenti ITS
 
-## 1. Da un'idea a cinque compiti piccoli
+Questa guida insegna a costruire il programma. Presuppone variabili, condizioni e cicli in un qualsiasi linguaggio; spiega la sintassi JavaScript quando compare. I primi esercizi funzionano senza Vinted, Telegram o credenziali. I servizi reali arrivano dopo, quando sai spiegare e verificare la logica.
 
-La richiesta iniziale sembrava grande: cercare occasioni e inviare messaggi. L'ho divisa in cinque operazioni: leggere la configurazione, aprire una sessione, cercare articoli, eliminare i duplicati e notificare su Telegram. Ogni operazione diventa una funzione verificabile. Non c'è un algoritmo che scopre automaticamente il valore di mercato: il bot applica i criteri che scegli tu.
+Il progetto osserva articoli, applica regole e notifica quelli nuovi. Non determina automaticamente il valore commerciale e non acquista. Vinted è il caso di studio per problemi comuni: HTTP, dati esterni, stato, errori e test.
 
-Il flusso è: avvio → configurazione → homepage e cookie → catalogo → filtro prezzo e margine → controllo ID → Telegram → registrazione ID → attesa del prossimo controllo.
+Come studiare: esegui una fase, prevedi l'effetto di una modifica, poi verifica il risultato. Completa gli esercizi prima di leggere le soluzioni. Il codice eseguibile è in docs/laboratorio; bot.js è il programma reale. I frammenti indicati come estratti non sono programmi autonomi.
 
-La rapidità viene dall'uso di componenti già esistenti e dalla generazione assistita del codice. La parte che richiede prove è il collegamento ai servizi reali. Nel nostro caso il primo endpoint restituiva 404: una soluzione plausibile e testata con simulazioni non era ancora verificata su Vinted.
+## 1. Progettare prima di programmare
 
-Obiettivo di questa guida: capire il programma pubblicato, ricostruirne i pezzi e saper diagnosticare un problema. I frammenti mostrati spiegano il codice; per eseguirlo usa il bot.js completo del repository, riprodotto anche nell'appendice PDF.
+Trasforma la richiesta in input, trasformazioni e output. Input: ricerca, prezzo massimo e articoli. Output: una notifica per articolo compatibile non ancora notificato. Stato: ID notificati e cookie. Eventi: avvio, scadenza del timer, risposta HTTP.
 
-## 2. Preparare il progetto su Windows
+```text
+controlla:
+  se un controllo è attivo: termina
+  ottieni gli articoli
+  per ogni articolo:
+    se prezzo non valido: salta
+    se prezzo oltre soglia: salta
+    se ID già notificato: salta
+    invia la notifica
+    registra ID dopo conferma
+```
 
-Installa Node.js LTS 22 o successivo da https://nodejs.org, con Add to PATH selezionato. Chiudi e riapri il terminale. Node esegue JavaScript sul computer; npm installa le librerie.
+«Registra dopo conferma» è un requisito: registrare prima significherebbe perdere la notifica quando l'invio fallisce. Il pseudocodice rende visibile questa scelta prima di selezionare librerie.
 
-Nel Prompt dei comandi, verifica e apri la cartella estratta:
+Dividi le responsabilità: configurazione, acquisizione dati, filtro, formattazione, invio e coordinamento. Una funzione che conosce contemporaneamente cookie, prezzi, token e cron è difficile da provare. Separando il filtro dalla rete puoi verificarlo con un array scritto a mano.
+
+Esercizio 1: scrivi input e output attesi per prezzo oltre soglia, ID duplicato e notifica fallita. Indica se lo stato deve cambiare.
+
+## 2. Strumenti, moduli e primo programma
+
+Node esegue JavaScript fuori dal browser; npm installa dipendenze. .mjs indica un modulo; in questo repository anche .js è un modulo perché package.json contiene "type": "module". import ed export collegano file e funzioni.
+
+Dal Prompt dei comandi Windows, dentro il repository:
 
 ```bat
 node --version
-npm --version
-cd /d C:\Users\valep\Desktop\vinted-main
 npm ci
+node docs/laboratorio/01-filtro.mjs
 ```
 
-Per costruire un progetto nuovo, invece, crea una cartella, esegui npm init -y e npm install dotenv node-cron tough-cookie. Imposta "type": "module" in package.json per usare import. Nel progetto già scaricato questi passi sono già stati fatti: non ripeterli.
+Serve Node 22 o successivo. npm ci reinstalla le versioni del lockfile; non compila il tuo JavaScript. I primi laboratori usano solo moduli integrati.
 
-dotenv legge .env; node-cron pianifica controlli; tough-cookie gestisce cookie e scadenze. fetch è incluso in Node moderno, quindi non serve axios. package-lock.json registra le versioni risolte; npm ci le reinstalla senza riscrivere il lockfile. node_modules contiene le dipendenze e non va caricato su GitHub.
+Per un progetto nuovo usa una cartella separata, npm init -y e file .mjs. Aggiungi librerie quando servono: npm install dotenv node-cron tough-cookie. Non iniziare riscrivendo un parser di cookie o uno scheduler.
 
-## 3. Configurazione e segreti
+Il terminale esegue; l'editor modifica; gli strumenti sviluppatore del browser osservano le richieste di un sito. «Cannot find module .../non» significa che node ha ricevuto non come nome del file, non che la ricerca Vinted è fallita.
 
-Se non hai ancora .env, copialo dal modello. Se esiste e contiene i tuoi dati, non sovrascriverlo.
+Esercizio 2: crea saluto.mjs con console.log('Ciao ITS') ed eseguilo. Rinomina il file e prova il vecchio comando. Distingui un percorso errato da un errore della logica.
 
-```bat
-copy .env.example .env
-notepad .env
+## 3. Oggetti, array e funzioni pure
+
+Un articolo è un oggetto con proprietà; una lista è un array. Una funzione può prendere la lista e restituirne un sottoinsieme senza modificarla.
+
+```javascript
+const articoli = [
+  { id: 1, titolo: 'Bracciale', prezzo: 20 },
+  { id: 2, titolo: 'Collana', prezzo: 45 },
+  { id: 3, titolo: 'Anello', prezzo: 25 }
+];
+
+function trovaOccasioni(lista, massimo) {
+  return lista.filter(articolo => {
+    return Number.isFinite(articolo.prezzo)
+      && articolo.prezzo >= 0
+      && articolo.prezzo <= massimo;
+  });
+}
+
+console.log(trovaOccasioni(articoli, 25));
 ```
 
-Esempio di configurazione (le credenziali sono segnaposto):
+Risultato: oggetti con ID 1 e 3. filter visita ogni elemento e lo conserva se la funzione restituisce true. articolo => ... è una funzione passata come argomento, chiamata callback. Puoi ottenere lo stesso risultato con un ciclo e push.
 
-```dotenv
-TELEGRAM_BOT_TOKEN=INSERISCI_IL_TUO_TOKEN
-TELEGRAM_CHAT_ID=INSERISCI_IL_TUO_CHAT_ID
-VINTED_BASE_URL=https://www.vinted.it
-VINTED_CATALOG_URL=https://api.vinted.it/svc-catalogue/items
-SEARCH_TEXT=bracciale pandora argento
-PRICE_TO=25
-ORDER=newest_first
-PER_PAGE=20
-CRON_SCHEDULE=*/30 * * * * *
-ESTIMATED_RESALE_PRICE=
-MIN_PROFIT=10
-ESTIMATED_COSTS=8
+La funzione è pura: dipende dagli argomenti, non usa rete o stato esterno e non modifica lista. Questo facilita i test. const impedisce di riassegnare una variabile, ma non congela l'oggetto: articoli.push(...) è ancora possibile. Usa let se devi riassegnare.
+
+&& è AND logico con valutazione da sinistra a destra: se una condizione è falsa, le successive non vengono valutate. return restituisce il risultato e termina la funzione. filter crea un nuovo array, ma gli oggetti al suo interno restano gli stessi riferimenti: modificare un oggetto selezionato modifica anche quello presente nella lista originale.
+
+Il file 01-filtro.mjs contiene una versione completa con un'asserzione. Esercizio 3: aggiungi prezzi 0, -1, NaN e 25.01. Prevedi il risultato e verifica. Riscrivi il filtro con for...of senza modificare l'array originale.
+
+## 4. JSON e validazione al confine
+
+JSON è testo strutturato. JSON.parse converte testo in dati; JSON.stringify converte dati in testo. Un oggetto JavaScript può contenere anche metodi e valori che JSON non rappresenta direttamente.
+
+L'API può fornire:
+
+```javascript
+const item = {
+  id: 42,
+  title: 'Bracciale',
+  price: { amount: '20.00', currency_code: 'EUR' }
+};
+const amount = Number(item.price.amount);
+console.log(amount <= 25); // true
 ```
 
-import 'dotenv/config' carica il file all'avvio. process.env.SEARCH_TEXT legge una variabile. readConfig converte numeri, controlla gli URL e rifiuta una configurazione incompleta. Ogni modifica richiede il riavvio del bot.
+Una conversione non è una validazione. Number('') e Number(null) valgono 0, mentre Number(undefined) è NaN. Un prezzo mancante non deve diventare un articolo gratis.
 
-.gitignore esclude .env, node_modules e i log. .env.example contiene solo nomi e valori pubblici. Se un token viene pubblicato per errore, revocalo con BotFather: cancellarlo dall'ultimo file non lo rimuove dalla cronologia Git.
+Estratto del bot:
 
-## 4. Trovare l'endpoint e creare una sessione
+```javascript
+const raw = typeof item.price === 'object'
+  ? item.price?.amount : item.price;
+const amount = raw === null || raw === undefined || raw === ''
+  ? NaN : Number(raw);
+if (!Number.isFinite(amount) || amount < 0) continue;
+```
 
-Un'API è un indirizzo che restituisce dati strutturati. La ricerca visibile sul sito effettua richieste che puoi osservare: apri Vinted, premi Ctrl+Maiusc+I, seleziona Network/Rete e Fetch/XHR, poi fai una ricerca. Cerca items e leggi Request URL e Status Code. Non condividere cookie, token, intestazioni complete o Copy as cURL.
+?. è optional chaining: se price è null o undefined non lancia un errore. ?? sceglie un valore alternativo per null e undefined; || lo sceglie per tutti i valori falsy, compresi 0 e stringa vuota. Non sono intercambiabili.
 
-Il vecchio /api/v2/catalog/items restituiva 404. La richiesta che hai osservato il 8 ottobre 2026 era https://api.vinted.it/svc-catalogue/items e rispondeva 200. Questo è un endpoint osservato sul sito, non un contratto pubblico garantito per sempre.
+Il bot copre il formato osservato, ma non è un validatore universale: Number('   ') vale 0 e tipi inattesi richiedono più controlli. I test sui confini aiutano a trovare questi casi.
 
-Il bot visita prima https://www.vinted.it/. Riceve i Set-Cookie, li salva nel CookieJar e allega alle richieste successive soltanto i cookie consentiti per quel dominio e percorso. Cookie del solo www non vengono automaticamente inviati ad api; un cookie Domain=.vinted.it può valere per entrambi. Non allarghiamo artificialmente il loro dominio.
+Esercizio 4: scrivi leggiPrezzo(item), che restituisca un numero o null. Rifiuta stringhe vuote o di soli spazi, booleani, negativi e valori non numerici. Accetta '20.50' e 0. Lavora nel laboratorio senza cambiare subito bot.js.
+
+## 5. HTTP: collegare client e server
+
+Una richiesta contiene metodo, URL, intestazioni e talvolta corpo. GET richiede dati; POST li invia. La risposta contiene status, intestazioni e corpo. 200 indica successo HTTP, ma il contenuto deve essere controllato.
+
+I parametri dopo ? formano la query string. URLSearchParams codifica spazi e simboli:
+
+```javascript
+const url = new URL('http://127.0.0.1:3000/items');
+url.search = new URLSearchParams({
+  search_text: 'bracciale argento',
+  price_to: '25'
+}).toString();
+console.log(url.href);
+```
+
+Il laboratorio usa HTTP solo su loopback, senza credenziali. Il servizio vero usa HTTPS. Esegui node docs/laboratorio/02-http.mjs: avvia un server su una porta libera, fa una richiesta, filtra i risultati e chiude il server. Il risultato contiene solo il bracciale da 20. Una seconda richiesta dimostra la gestione di 404.
+
+createServer è il server, fetch il client. Anche nello stesso processo, comunicano con una vera richiesta HTTP. La porta non è fissa: listen(0) chiede al sistema di sceglierne una libera. Leggi come il server crea JSON e il client lo decodifica.
+
+Esercizio 5: fai leggere al server price_to e filtrare prima di rispondere. Mantieni anche il filtro locale: il client deve restare corretto quando un servizio ignora un parametro.
+
+## 6. Promise, async e await
+
+La rete non produce un risultato immediato. Una Promise rappresenta un risultato futuro: pending, fulfilled oppure rejected. async fa restituire una Promise alla funzione. await attende la risoluzione e sospende la continuazione di quella funzione asincrona.
+
+```javascript
+async function caricaArticoli(url) {
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(20_000)
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const data = await response.json();
+  if (!Array.isArray(data.items)) {
+    throw new Error('items deve essere un array');
+  }
+  return data.items;
+}
+```
+
+Due attese: intestazioni della risposta, poi lettura e decodifica del corpo. fetch normalmente non rifiuta per 404 o 500: restituisce una Response con ok=false. Rifiuta per errori di connessione o abort. Controlla perciò response.ok.
+
+await non blocca tutto Node: il motore può elaborare altri eventi durante l'attesa della rete. Un ciclo sincrono pesante, invece, occupa il thread JavaScript e ritarda timer e callback.
+
+Un throw dentro async produce una Promise rifiutata. Il chiamante la gestisce con try/catch attorno ad await. Senza await potresti stampare una Promise al posto degli articoli o non intercettare il rifiuto dove pensi.
+
+Esercizio 6: aggiungi un ritardo di 500 ms al server prima della risposta. Stampa «prima», risultato, «dopo». Confronta con e senza await. Non usare un timer per supporre che la richiesta abbia finito: attendi la Promise.
+
+## 7. Stato, Set e closure
+
+Il filtro non ricorda il passato. Per evitare duplicati serve stato conservato tra controlli. Set memorizza valori unici; has consulta, add inserisce, size conta.
+
+Una funzione può restituire un'altra funzione che mantiene accesso alle variabili esterne: è una closure. Estratto della factory del laboratorio:
+
+```javascript
+function creaMonitor({ carica, invia, massimo }) {
+  const notificati = new Set();
+  let attivo = false;
+  async function controlla() {
+    if (attivo) return { saltato: true };
+    attivo = true;
+    try {
+      const articoli = await carica();
+      for (const articolo of trovaOccasioni(articoli, massimo)) {
+        const id = String(articolo.id);
+        if (notificati.has(id)) continue;
+        await invia(articolo);
+        notificati.add(id);
+      }
+    } finally {
+      attivo = false;
+    }
+  }
+  return { controlla, notificati };
+}
+```
+
+La versione completa 03-monitor.mjs valida dipendenze, soglia e ID e restituisce un riepilogo. Esegui node docs/laboratorio/03-demo.mjs: primo controllo, una notifica simulata; secondo controllo, zero nuove notifiche.
+
+{ carica, invia, massimo } nel parametro è destructuring: estrae tre proprietà dall'oggetto passato. return { controlla, notificati } è una forma abbreviata di { controlla: controlla, notificati: notificati }. Nel laboratorio esponiamo il Set per osservarlo nei test; un'API più incapsulata potrebbe offrire solo conteggi o copie, evitando modifiche esterne accidentali.
+
+finally viene eseguito anche dopo un errore. Senza finalmente liberare attivo, un invio fallito potrebbe bloccare tutti i controlli futuri. Il blocco vale nel processo corrente, non coordina due copie indipendenti.
+
+String rende 42 e '42' la stessa chiave. Il Set si azzera al riavvio e cresce nel tempo. La factory lascia propagare gli errori: il chiamante dovrà decidere quando riprovare.
+
+Esercizio 7: simula un invio fallito al primo tentativo e riuscito al secondo. Dopo il fallimento l'ID non deve essere nel Set e il blocco deve essere liberato. Sposta poi add prima di invia e osserva quale requisito rompi.
+
+## 8. Telegram come adapter di uscita
+
+Nel laboratorio invia stampa testo. Sostituirla con una funzione che esegue POST realizza un adapter: stesso contratto verso il monitor, implementazione diversa.
+
+Estratto da usare solo con una configurazione reale:
+
+```javascript
+async function inviaTelegram(token, chatId, testo) {
+  const endpoint = `https://api.telegram.org/bot${token}/sendMessage`;
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, text: testo }),
+    signal: AbortSignal.timeout(20_000)
+  });
+  if (!response.ok) throw new Error(`Telegram HTTP ${response.status}`);
+  const data = await response.json();
+  if (data.ok !== true) throw new Error('Invio non confermato');
+}
+```
+
+JSON.stringify produce il corpo; Content-Type dice al server come leggerlo. chat_id indica il destinatario; token autorizza il bot. Non stampare l'endpoint: contiene il token.
+
+Le stringhe tra backtick sono template literal: ${espressione} inserisce un valore. Non confonderle con comandi shell. L'operatore ... nella gestione delle intestazioni è spread: copia proprietà da un oggetto dentro un altro. cookie ? oggetto : {} è un ternario, cioè una scelta tra due valori.
+
+dotenv legge .env all'avvio. I segreti non sono costanti da pubblicare. .gitignore esclude .env, ma non impedisce di copiarne valori in log e screenshot. Un token esposto va revocato. .env.example contiene solo valori pubblici e segnaposto.
+
+La formattazione dovrebbe essere una funzione pura separata dalla rete. Il bot reale usa testo semplice e limita le lunghezze dei campi. I dati degli annunci non devono diventare comandi shell, codice o HTML interpretato.
+
+Esercizio 8: crea formattaMessaggio(articolo), verifica il testo con assert e passalo a un invio simulato. Normalizza prezzo e titolo prima della formattazione.
+
+## 9. Cookie e adapter Vinted
+
+Sostituisci la carica simulata con una sorgente reale solo dopo avere verificato il monitor. L'adapter deve ottenere sessione, costruire URL, verificare HTTP e JSON, poi restituire dati adatti alla logica interna.
+
+Un cookie va conservato e rimandato rispettando dominio, percorso, scadenza e sicurezza. Node fetch non dispone automaticamente dell'archivio cookie di un browser. tough-cookie gestisce quelle regole.
+
+Estratto di gestione cookie:
 
 ```javascript
 const cookie = await jar.getCookieString(url);
-// Dopo la risposta HTTP:
+const response = await fetch(url, {
+  headers: { ...(cookie ? { Cookie: cookie } : {}) }
+});
 for (const value of response.headers.getSetCookie()) {
   await jar.setCookie(value, response.url || url);
 }
 ```
 
-Un User-Agent desktop descrive il client; non autentica l'utente e non garantisce accesso. Il bot non risolve CAPTCHA. Un 200 nel browser non garantisce un 200 da Node: il browser può avere una sessione diversa.
+Il bot completo aggiunge User-Agent, Accept, lingua, Referer e timeout. refreshSession svuota il jar e visita la homepage. Un cookie del solo www non deve essere forzato sul dominio api. User-Agent non autentica e non garantisce accesso.
 
-## 5. Costruire la ricerca e filtrare gli articoli
+Il vecchio /api/v2/catalog/items restituiva 404. Gli strumenti del browser hanno mostrato https://api.vinted.it/svc-catalogue/items con 200. La diagnostica sul tuo PC ha poi verificato 20 articoli con price.amount e price.currency_code. È un endpoint osservato, non una API pubblica stabile.
 
-URLSearchParams codifica spazi e caratteri speciali: evita di concatenare manualmente parole chiave nell'URL. Il programma costruisce i parametri search_text, price_to, order, per_page, page e un nuovo global_search_session_id tramite randomUUID.
+La risposta non esponeva i vecchi size_title e brand_title: il codice mostra N/D quando mancano. Non inventare nuovi percorsi dei campi senza osservarne la struttura. Un 200 nel browser non garantisce accesso da Node con una sessione differente.
+
+Esercizio 9: separa tre confini: risposta HTTP, oggetto dell'API, modello interno. Elenca i controlli di ciascuno e dove convertire un prezzo stringa in numero.
+
+## 10. Errori, retry e backoff
+
+401 indica un problema di sessione o autenticazione; 403 accesso negato; 404 risorsa non disponibile; 429 limitazione delle richieste. Un timeout non dice necessariamente se il server ha completato l'operazione.
+
+Il bot rinnova i cookie dopo 401 e ritenta una sola volta, senza ricorsioni indefinite. Per 429 considera Retry-After, espresso in secondi o come data HTTP. CAPTCHA e blocchi non vanno aggirati disattivando verifiche.
+
+Backoff significa attesa crescente. Estratto del bot:
 
 ```javascript
-const url = new URL(config.catalogUrl);
-const params = new URLSearchParams({
-  search_text: config.searchText,
-  price_to: String(config.priceTo),
-  order: config.order,
-  page: '1'
+failures += 1;
+const delay = Math.max(
+  error.retryAfter || 0,
+  Math.min(30 * 60_000, 30_000 * 2 ** Math.min(failures, 6))
+);
+nextCheckAt = Date.now() + delay;
+```
+
+La base produce 60, 120, 240, 480, 960 e 1800 secondi, poi resta a 1800; Retry-After più lungo prevale. Un successo azzera failures. Date.now e i timer lavorano in millisecondi: confondere 60 con 60_000 cambia l'attesa di un fattore mille.
+
+Se Telegram accetta l'invio e la risposta si perde, il client può ritentare e duplicare il messaggio. Il Set non garantisce «exactly once». La consegna distribuita ha ambiguità che non si risolvono solo con una struttura dati locale.
+
+Esercizio 10: estrai calcolaAttesa(numeroErrori, retryAfter) come funzione pura. Prova primo errore, sesto errore e Retry-After di un'ora. Confronta numeri senza aspettare davvero.
+
+## 11. Scheduler e ciclo di vita
+
+Prima verifica un singolo controllo, poi ripetilo. node-cron usa sei campi: secondi, minuti, ore, giorno del mese, mese, giorno della settimana.
+
+```javascript
+import cron from 'node-cron';
+const task = cron.schedule('*/30 * * * * *', () => {
+  void monitor.check();
 });
-url.search = params.toString();
+void monitor.check(); // controllo immediato
 ```
 
-await fetch attende una risposta senza bloccare tutto il motore JavaScript. await response.json converte il JSON in oggetti. Prima di leggere gli articoli, getItems verifica che data.items sia un array: non considera valida una risposta con una forma sconosciuta.
+Nel bot check gestisce gli errori internamente. Nel laboratorio controlla li propaga: per collegarlo a cron serve catch, per esempio monitor.controlla().catch(...). void non intercetta errori: ignora soltanto il valore restituito.
 
-Nel tuo controllo reale sono arrivati 20 articoli; price contiene amount e currency_code. Il bot converte amount in numero e applica anche localmente PRICE_TO, senza affidarsi solo al filtro remoto. Legge la prima pagina: annunci molto numerosi possono sfuggire tra due controlli.
+Due callback possono partire mentre la prima è ancora in attesa. running o attivo impedisce sovrapposizioni. Se un controllo impiega 15 secondi e cron scatta ogni 10, alcune esecuzioni vengono saltate. Non equivale a completare una ricerca ogni 10 secondi.
 
-La risposta osservata non include size_title e brand_title: il codice mostra N/D per quei campi. Non abbiamo ancora adattato taglia e marca al nuovo formato. Aggiungere campi richiede osservarne la struttura, non indovinarla.
+Ctrl+C interrompe il processo. Il bot ferma cron e termina senza garantire il completamento degli invii in corso. Un servizio più robusto potrebbe aspettarli. Sospensione e ibernazione fermano lavoro e rete; il bot non recupera automaticamente tutti i controlli persi.
 
-## 6. Collegare Telegram
+Esercizio 11: confronta intervallo fisso e ciclo che attende lavoro e poi pausa. Il primo programma istanti di partenza; il secondo include la durata del lavoro nel periodo. Scegli in base al requisito.
 
-Su Telegram apri @BotFather ufficiale, invia /newbot e scegli nome e username. Copia il token in .env. Apri il tuo bot, premi Avvia e inviagli un messaggio. In locale visita https://api.telegram.org/bot<TOKEN>/getUpdates sostituendo <TOKEN>; cerca l'id dentro chat, non message_id né l'id del bot. L'URL contiene il token: non condividerlo. Se result è vuoto, invia un nuovo messaggio e riprova. Un webhook già configurato rende getUpdates indisponibile.
+## 12. Test e dependency injection
 
-L'invio è una richiesta POST con corpo JSON:
+Un test prepara, agisce e verifica. Deve fallire quando rompi un requisito. Non basta controllare che una funzione esista.
+
+Il monitor riceve carica e invia: è dependency injection. I test forniscono funzioni simulate, senza Vinted o Telegram. Estratto:
 
 ```javascript
-const endpoint = `https://api.telegram.org/bot${config.token}/sendMessage`;
-const response = await fetch(endpoint, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    chat_id: config.chatId,
-    text: 'Titolo, prezzo e link dell\'articolo'
-  })
+const inviati = [];
+const monitor = creaMonitor({
+  massimo: 25,
+  carica: async () => [{ id: 1, titolo: 'A', prezzo: 20 }],
+  invia: async articolo => { inviati.push(articolo.id); }
 });
+await monitor.controlla();
+await monitor.controlla();
+assert.deepEqual(inviati, [1]);
 ```
 
-Il codice completo usa un timeout, controlla lo stato HTTP e richiede ok:true nella risposta Telegram. Il messaggio è testo semplice: niente interpretazione HTML di titoli degli annunci. Il link viene costruito dall'ID sul dominio Vinted configurato.
+Per provare sovrapposizioni usiamo una Promise controllabile. La prima carica aspetta finché il test non la sblocca. Nel frattempo una seconda chiamata deve essere saltata. Non servono sleep arbitrari.
 
-## 7. Duplicati e controlli periodici
+Esegui node --test docs/laboratorio/verifica.mjs. Cinque test coprono filtro e soglia, duplicati, invio fallito, rilascio del blocco dopo errore di acquisizione e sovrapposizioni. npm test esegue i sei test del bot reale con HTTP simulato.
 
-Un Set contiene valori unici. notified.has(id) verifica se l'articolo è già stato segnalato. notified.add(id) avviene soltanto dopo l'invio confermato: se Telegram fallisce, l'articolo non viene segnato come consegnato.
+Livelli: test unitario per logica; server locale per HTTP; node bot.js --check per accesso e struttura reali; npm start per flusso completo e Telegram. Un livello non sostituisce gli altri.
+
+Esercizio 12: cambia temporaneamente <= in < nel filtro. Il caso con prezzo alla soglia deve fallire. Se resta verde, il test non verifica quel requisito. Ripristina la condizione.
+
+## 13. Leggere il codice del bot reale
+
+Segui bot.js per responsabilità: readConfig converte e valida; createMonitor crea jar, Set e stato; vintedRequest gestisce HTTP e cookie; refreshSession rinnova; getItems cerca e controlla il JSON; notify invia; check coordina; inspect fornisce diagnostica senza Telegram.
+
+Il blocco finale esegue il programma solo se bot.js è avviato direttamente. Confronta import.meta.url e pathToFileURL(process.argv[1]).href. I test possono importare funzioni senza avviare cron.
+
+createMonitor(config, fetchFn = fetch) permette di sostituire fetch nei test. È lo stesso principio del laboratorio applicato al confine HTTP. La closure conserva stato; config raccoglie i valori comuni.
+
+Esercizio 13: segui un articolo con carta e penna: arriva da items, ha prezzo valido, passa la soglia, non è nel Set, viene notificato e registrato. Ripeti con Telegram 429: quali righe salti e quali variabili cambi?
+
+Limiti effettivi: una ricerca, una pagina, ID in memoria, stima di rivendita fissa opzionale, nessun acquisto automatico. Più ricerche, persistenza e adattamento marca/taglia sono modifiche future da progettare, non funzioni già presenti.
+
+## 14. Soluzioni ragionate
+
+1. Prezzo oltre soglia e duplicato: nessun invio, stato invariato. Invio fallito: ID non aggiunto, blocco liberato. Gli articoli già inviati prima dell'errore restano registrati.
+
+2. console.log('Ciao ITS') stampa una riga. Dopo la rinomina il vecchio comando non trova il modulo: il codice non è stato eseguito. Correggi il percorso.
+
+3. Zero e 25 passano; -1, NaN e 25.01 no. Un ciclo equivalente usa un array risultato e push quando la stessa condizione vale true.
+
+4. Una soluzione più rigorosa:
 
 ```javascript
-if (notified.has(id)) continue;
-await notify(item, amount, currency);
-notified.add(id);
+function leggiPrezzo(item) {
+  const raw = typeof item.price === 'object'
+    ? item.price?.amount : item.price;
+  if (typeof raw !== 'number' && typeof raw !== 'string') return null;
+  if (typeof raw === 'string' && raw.trim() === '') return null;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
 ```
 
-Il Set è in memoria, si azzera al riavvio e cresce nel tempo. Non garantisce consegna esattamente una volta: Telegram potrebbe accettare un messaggio e la risposta potrebbe andare persa, causando un duplicato al nuovo tentativo. Al primo avvio il bot segnala anche gli annunci già presenti e compatibili.
+5. Leggi url.searchParams.get('price_to'), verifica presenza e validità, convertilo e filtra sul server. Il client mantiene la propria verifica.
 
-node-cron usa sei campi: secondi, minuti, ore, giorno del mese, mese, giorno della settimana. */30 * * * * * controlla ai secondi 0 e 30; */10 * * * * * ogni 10 secondi; 0 * * * * * ogni minuto. Una frequenza maggiore non garantisce più profitto e può portare a limiti 429.
+6. Con await: prima, dati, dopo. Senza await il chiamante ottiene una Promise e procede senza aspettare. Usa try/catch con await, non un ritardo scelto a caso.
 
-running evita due controlli contemporanei. nextCheckAt sospende le nuove richieste durante un'attesa dopo errore. Il primo controllo parte subito, poi cron richiama check. Lo schermo può spegnersi; sospensione, ibernazione o spegnimento fermano l'esecuzione. Un processo locale non diventa automaticamente un servizio sempre acceso.
+7. Nel fake invia un contatore lancia al primo tentativo. Dopo il primo fallimento Set vuoto; dopo il secondo tentativo ID presente. Spostare add prima dell'invio rompe il test. La verifica completa è allegata.
 
-## 8. Gestire errori e provare il programma
+8. Usa una template string con titolo e prezzo.toFixed(2). Verifica il testo esatto con un articolo noto. Normalizza prima: il formatter non deve inventare un prezzo mancante.
 
-401: il bot elimina i vecchi cookie, visita di nuovo la homepage e ritenta la ricerca una volta. 403: accesso negato; non è un invito ad aggirare una verifica. 404: indirizzo non disponibile o risposta di accesso; si indaga prima di cambiare l'URL. 429: troppe richieste; il bot considera Retry-After e applica un'attesa minima di 60 secondi.
+9. HTTP: status e timeout. API: array items e tipi dei campi. Modello interno: ID normalizzato e prezzo numerico. Concentra la conversione al confine, invece di ripeterla ovunque.
 
-Gli errori consecutivi producono attese progressive. Con l'implementazione attuale la sequenza base è 60, 120, 240, 480, 960, 1800 secondi e poi resta a 1800; Retry-After può imporre un'attesa più lunga. Dopo un controllo riuscito il contatore si azzera. Ogni richiesta ha un timeout di 20 secondi.
+10. calcolaAttesa(1, 0) = 60000; calcolaAttesa(6, 0) = 1800000; calcolaAttesa(1, 3600000) = 3600000. Sono millisecondi.
 
-Esegui nell'ordine:
+11. Intervallo: possibilità di sovrapposizione, da gestire. Ciclo con await: una operazione alla volta, periodo comprensivo di lavoro e pausa. La scelta dipende dal comportamento voluto.
 
-```bat
-npm test
-node bot.js --check
-npm start
-```
+12. Il test alla soglia distingue <= e <. È una verifica del requisito, non una ripetizione dell'implementazione.
 
-I sei test simulati coprono diagnostica senza Telegram, risposta inattesa, rinnovo 401 e deduplicazione, filtri, errore Telegram 429 e assenza di sovrapposizioni. In createMonitor(config, fetchFn) sostituiamo fetch con risposte controllate: i test non inviano messaggi reali.
+13. Con 429 non esegui notified.add; entri nel catch, incrementi failures, aggiorni nextCheckAt e nel finally liberi running.
 
---check verifica l'accesso reale al catalogo e mostra conteggi e nomi di campi, senza inviare notifiche. Nel tuo PC ha restituito 20 articoli. npm start verifica il flusso completo; hai poi confermato il funzionamento. I test simulati non dimostrano da soli accesso a Vinted, consegna Telegram o esattezza di una stima economica.
+## 15. Mini-progetto finale e metodo di lavoro
 
-## 9. Calcolare il margine e migliorare il bot
+Ricostruisci un monitor senza guardare bot.js: sorgente HTTP locale, filtro puro, formatter, invio simulato, Set e blocco. Deve funzionare senza servizi esterni. Collega poi un servizio reale alla volta.
 
-Margine stimato = prezzo realistico di rivendita - prezzo articolo - costi stimati. Esempio puramente didattico: 45 - 25 - 8 = 12 euro. Con ESTIMATED_RESALE_PRICE=45, ESTIMATED_COSTS=8 e MIN_PROFIT=12, un articolo da 25 euro passa il filtro. La soglia di rivendita vale per tutta la ricerca e il filtro accetta soltanto EUR: non è adatta a lotti molto diversi tra loro.
+Criteri: una notifica per ID nella stessa esecuzione; prezzo alla soglia accettato; valori non validi esclusi; invio fallito non registrato; blocco liberato dopo errore; controlli simultanei non sovrapposti; errori HTTP distinguibili. Dimostra i risultati con test.
 
-Se lasci ESTIMATED_RESALE_PRICE vuoto, il filtro sul margine è disattivato: il bot controlla solo il prezzo massimo. Stime, autenticità, condizioni e domanda restano responsabilità della valutazione umana. Il programma non compra articoli.
+Sfida avanzata: persistenza degli ID. Progetta file assente, corrotto o non scrivibile, poi scegli formato e scrittura atomica. Non aggiungere writeFile senza ragionare su errori e riavvii.
 
-Prossimi miglioramenti sensati: salvare gli ID in un archivio locale con scadenza; supportare più ricerche; leggere marca e taglia dal nuovo formato; mostrare un riepilogo dei controlli; aggiungere test per Retry-After e errori di rete. Sono idee, non funzioni già implementate. Prima di ogni modifica scegli quale comportamento verificare.
+Ho usato conoscenza di JavaScript e protocolli, librerie esistenti e generazione assistita del codice. La velocità di scrittura non equivale a certezza: il primo endpoint era sbagliato. Abbiamo osservato una richiesta, corretto il confine HTTP e verificato sul tuo PC. Diagnosi e test fanno parte della programmazione.
 
-## 10. Il metodo da riutilizzare
+Riferimenti: https://developer.mozilla.org/en-US/docs/Web/JavaScript • https://nodejs.org/en/learn • https://nodejs.org/api/test.html • https://nodecron.com • https://core.telegram.org/bots/api
 
-1. Scrivi input e risultato atteso: ricerca, soglia prezzo, messaggio.
-2. Dividi in funzioni piccole con una responsabilità ciascuna.
-3. Usa librerie mantenute per compiti comuni, senza ricostruire cookie e cron.
-4. Verifica il servizio reale con una richiesta non distruttiva.
-5. Scrivi test per errori e comportamenti importanti, non solo per il caso felice.
-6. Tieni separati configurazione pubblica e credenziali.
-7. Pubblica soltanto i file necessari e documenta cosa è ancora incerto.
-
-L'errore iniziale ci insegna una cosa concreta: l'endpoint e il formato dei dati devono essere confermati prima di chiamare il sistema pronto. Il browser ha fornito un indizio; la diagnostica sul tuo PC ha verificato l'accesso del bot.
-
-Documentazione: https://nodejs.org/en/learn • https://nodecron.com • https://core.telegram.org/bots/api • https://github.com/motdotla/dotenv • https://github.com/salesforce/tough-cookie
-
-Repository e codice completo: https://github.com/ValePrugna/vinted
+Repository: https://github.com/ValePrugna/vinted
