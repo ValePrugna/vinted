@@ -48,7 +48,7 @@ export function readConfig(env = process.env, requireTelegram = true) {
     order: env.ORDER || 'newest_first', perPage, schedule,
     resalePrice: env.ESTIMATED_RESALE_PRICE?.trim() ? number('ESTIMATED_RESALE_PRICE', 0) : null,
     minProfit: number('MIN_PROFIT', 10), costs: number('ESTIMATED_COSTS', 8),
-    searches, notifiedFile: resolve(env.NOTIFIED_FILE || '.data/notified.json'), notifiedTtlMs: ttlDays * 86_400_000,
+    searches, notifiedFile: resolve(env.NOTIFIED_FILE || '.data/notified.sqlite'), notifiedTtlMs: ttlDays * 86_400_000,
   };
 }
 
@@ -208,7 +208,7 @@ export function createMonitor(config, fetchFn = fetch, options = {}) {
     }
     return results;
   }
-  return { check, notified, inspect, initialize };
+  return { check, notified, inspect, initialize, close: () => store.close() };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -228,7 +228,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       const task = cron.schedule(config.schedule, monitor.check);
       console.log(`Monitoraggio avviato: ${getSearches(config).map(search => `${search.searchText || '(tutto il catalogo)'} (max ${search.priceTo})`).join('; ')}`);
       void monitor.check();
-      for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { task.stop(); process.exit(0); });
+      for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { task.stop(); monitor.close(); process.exit(0); });
     }
   } catch (error) {
     // Errori fetch possono includere URL: non stampare dettagli di rete sensibili.

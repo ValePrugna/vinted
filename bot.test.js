@@ -1,16 +1,21 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { readFile, writeFile, readdir, mkdir, rmdir } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createMonitor, readConfig, getPhotoUrl } from './bot.js';
-import { createNotifiedStore } from './notified-store.js';
+import { DatabaseSync } from 'node:sqlite';
+import { createMonitor as makeMonitor, readConfig, getPhotoUrl } from './bot.js';
+import { createNotifiedStore as makeStore } from './notified-store.js';
 
 const dirs = [];
+const closables = [];
+const createMonitor = (...args) => { const monitor = makeMonitor(...args); closables.push(monitor); return monitor; };
+const createNotifiedStore = (...args) => { const store = makeStore(...args); closables.push(store); return store; };
 const temp = () => { const dir = mkdtempSync(join(tmpdir(), 'vinted-test-')); dirs.push(dir); return dir; };
-after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
-const config = () => readConfig({ TELEGRAM_BOT_TOKEN: 'test-token', TELEGRAM_CHAT_ID: '123', SEARCH_TEXT: 'nike', NOTIFIED_FILE: join(temp(), 'notified.json') });
+after(() => { for (const resource of closables) resource.close(); for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
+const config = () => readConfig({ TELEGRAM_BOT_TOKEN: 'test-token', TELEGRAM_CHAT_ID: '123', SEARCH_TEXT: 'nike', NOTIFIED_FILE: join(temp(), 'notified.sqlite') });
+const rows = file => { const db = new DatabaseSync(file, { readOnly: true }); try { return db.prepare('SELECT id, notified_at FROM notified ORDER BY id').all().map(row => [row.id, row.notified_at]); } finally { db.close(); } };
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
 const item = { id: 42, title: 'Scarpe Nike', price: { amount: '20', currency_code: 'EUR' }, size_title: '42', brand_title: 'Nike' };
 
@@ -176,17 +181,19 @@ test('Riavvio del monitor: gli ID già inviati restano esclusi', async () => {
     if (url.includes('telegram')) { sends++; return json({ ok: true }); }
     return url.endsWith('/') ? new Response('homepage') : json({ items: [item] });
   };
-  await createMonitor(cfg, fetchFn).check();
+  const original = createMonitor(cfg, fetchFn);
+  await original.check();
+  original.close();
   const restarted = createMonitor(cfg, fetchFn);
   await restarted.check();
   assert.equal(sends, 1);
   assert.ok(restarted.notified.has('42'));
-  assert.equal(JSON.parse(await readFile(cfg.notifiedFile, 'utf8')).entries[0][0], '42');
+  assert.equal(rows(cfg.notifiedFile)[0][0], '42');
 });
 
 test('Scadenza archivio: elimina solo gli ID scaduti e scrive un file valido', async () => {
   const dir = temp();
-  const file = join(dir, 'notified.json');
+  const file = join(dir, 'notified.sqlite');
   let now = 1000;
   const store = createNotifiedStore(file, 100, () => now);
   await store.load();
@@ -197,8 +204,8 @@ test('Scadenza archivio: elimina solo gli ID scaduti e scrive un file valido', a
   store.prune();
   await store.flush();
   assert.deepEqual([...store.notified], ['2']);
-  assert.deepEqual(JSON.parse(await readFile(file, 'utf8')).entries, [['2', 1050]]);
-  assert.deepEqual(await readdir(dir), ['notified.json']);
+  assert.deepEqual(rows(file), [['2', 1050]]);
+  store.close();
   const restored = createNotifiedStore(file, 100, () => now);
   await restored.load();
   assert.deepEqual([...restored.notified], ['2']);
@@ -207,20 +214,75 @@ test('Scadenza archivio: elimina solo gli ID scaduti e scrive un file valido', a
 test('Archivio corrotto: arresta inizializzazione senza cancellare dati', async () => {
   const cfg = config();
   await writeFile(cfg.notifiedFile, '{file corrotto');
-  await assert.rejects(createMonitor(cfg).initialize(), /corrotto/);
+  await assert.rejects(createMonitor(cfg).initialize(), /SQLite non disponibile/);
   assert.equal(await readFile(cfg.notifiedFile, 'utf8'), '{file corrotto');
 });
 
 test('Salvataggio fallito: conserva ID in memoria e ritenta la scrittura', async () => {
-  const file = join(temp(), 'notified.json');
+  const file = join(temp(), 'notified.sqlite');
   const store = createNotifiedStore(file, 1000, () => 1000);
   await store.load();
-  await mkdir(file); // Impedisce rename sul percorso destinazione.
+  const lock = new DatabaseSync(file);
+  lock.exec('BEGIN IMMEDIATE'); // Un altro writer impedisce temporaneamente il commit.
   await assert.rejects(store.add('42'), /Salvataggio archivio/);
   assert.ok(store.notified.has('42'));
-  await rmdir(file);
+  assert.deepEqual(rows(file), []);
+  lock.exec('ROLLBACK');
+  lock.close();
   await store.flush();
-  assert.deepEqual(JSON.parse(await readFile(file, 'utf8')).entries, [['42', 1000]]);
+  assert.deepEqual(rows(file), [['42', 1000]]);
+});
+
+test('Migrazione JSON: conserva ID e date, mantiene il backup e importa una sola volta', async () => {
+  const file = join(temp(), 'notified.json');
+  const contents = JSON.stringify({ version: 1, entries: [['42', 1000], ['43', 950], ['42', 990]] });
+  await writeFile(file, contents);
+  let now = 1050;
+  const store = createNotifiedStore(file, 100, () => now);
+  await store.load();
+  assert.deepEqual([...store.notified], ['42']);
+  assert.deepEqual(rows(store.databaseFile), [['42', 1000]]);
+  assert.equal(await readFile(file, 'utf8'), contents);
+  store.close();
+  now = 1150;
+  const restarted = createNotifiedStore(file, 100, () => now);
+  await restarted.load();
+  assert.equal(restarted.notified.size, 0);
+  assert.equal(await readFile(file, 'utf8'), contents);
+  // Anche un vecchio JSON ora corrotto non viene riletto dopo la migrazione.
+  restarted.close();
+  await writeFile(file, 'backup modificato');
+  await restarted.load();
+  assert.equal(restarted.notified.size, 0);
+});
+
+test('JSON corrotto: migrazione bloccata, riprende dopo la correzione', async () => {
+  const file = join(temp(), 'notified.json');
+  await writeFile(file, '{corrotto');
+  const store = createNotifiedStore(file, 100, () => 1000);
+  await assert.rejects(store.load(), /JSON precedente.*corrotto/);
+  assert.equal(await readFile(file, 'utf8'), '{corrotto');
+  await writeFile(file, JSON.stringify({ version: 1, entries: [['42', 990]] }));
+  await store.load();
+  assert.ok(store.notified.has('42'));
+});
+
+test('Pulizia periodica: non scorre gli ID ad ogni ciclo', async () => {
+  let now = 10_000_000;
+  const store = createNotifiedStore(join(temp(), 'notified.sqlite'), 7_200_000, () => now);
+  await store.load();
+  await store.add('42');
+  const db = new DatabaseSync(store.databaseFile);
+  // La modifica serve soltanto a osservare quando passa la pulizia SQL.
+  db.prepare('UPDATE notified SET notified_at = 0').run();
+  now += 1000;
+  store.prune();
+  assert.ok(store.notified.has('42'));
+  now += 3_600_000;
+  store.prune();
+  assert.equal(store.notified.size, 0);
+  assert.deepEqual(rows(store.databaseFile), []);
+  db.close();
 });
 
 test('Configurazione ricerche: legge JSON e mantiene il vecchio .env', async () => {

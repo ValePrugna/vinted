@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": { "node": ">=22.13.0" },
   "scripts": { "start": "node bot.js", "test": "node --test" },
   "dependencies": { "dotenv": "^16.6.1", "node-cron": "^4.2.1", "tough-cookie": "^6.0.0" }
 }

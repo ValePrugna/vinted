@@ -6,7 +6,7 @@ Bot Node.js con commenti in italiano: monitora una o più ricerche, rinnova la s
 
 ## Installazione e configurazione
 
-1. Installa Node.js 22 o successivo.
+1. Installa Node.js 22.13 o successivo (consigliato Node 24 LTS). Il registro usa il modulo integrato `node:sqlite`.
 2. Apri la directory del progetto ed esegui `npm ci` per installare le dipendenze dal lockfile.
 3. Su Telegram crea un bot con **@BotFather** usando `/newbot` e conserva il token.
 4. Apri una conversazione con il tuo bot e invia `/start`. Recupera il tuo `chat.id` con il metodo Telegram `getUpdates` usando il token in locale. Non condividere token, risposte integrali o URL contenenti il token. Se il bot usa già un webhook, `getUpdates` non è disponibile: utilizza l'integrazione esistente per ottenere il chat ID.
@@ -48,24 +48,34 @@ Per i lotti con contenuti diversi, lascia `ESTIMATED_RESALE_PRICE` vuoto: il bot
 
 Quando `photo.url` o una foto nella lista `photos` contiene un URL HTTPS sul dominio immagini `vinted.net`, Telegram riceve la foto, la didascalia e il pulsante **Apri su Vinted**. Senza foto utilizzabile arriva il messaggio testuale. Se Telegram rifiuta la foto con HTTP 400, il bot ritenta come testo; non esegue questo fallback su timeout o 429. I campi marca e taglia restano `N/D` se la risposta del catalogo non li espone nel formato noto.
 
-Gli ID e le date di invio sono salvati nel file `.data/notified.json`, ignorato da Git. Le impostazioni facoltative sono:
+Gli ID e le date di invio sono salvati nel database SQLite `.data/notified.sqlite`, ignorato da Git. Non serve un server database né una dipendenza npm aggiuntiva. Le impostazioni facoltative sono:
 
 ```dotenv
-NOTIFIED_FILE=.data/notified.json
+NOTIFIED_FILE=.data/notified.sqlite
 NOTIFIED_TTL_DAYS=30
 ```
 
-Le date scadono dopo 30 giorni dall'invio, non dall'ultima visualizzazione. Dopo la scadenza un articolo ancora visibile può essere notificato di nuovo. La scrittura usa un file temporaneo e sostituzione atomica; non memorizza credenziali, cookie o foto. Se l'archivio è corrotto il bot si ferma all'avvio senza sovrascriverlo: conserva una copia e controllalo. Non eliminare il registro durante l'esecuzione. Usa una sola istanza del bot per archivio.
+Il database carica gli ID in un Set all'avvio; i controlli dei duplicati avvengono in memoria. Ogni invio confermato inserisce o aggiorna solo la sua riga in una transazione, senza riscrivere tutto l'archivio. Un indice sulla data facilita la pulizia, eseguita all'avvio e poi una volta all'ora. Le date scadono dopo 30 giorni dall'invio, non dall'ultima visualizzazione; la pulizia periodica può aggiungere fino a un'ora di tolleranza. Dopo la rimozione un articolo ancora visibile può essere notificato di nuovo.
+
+Il database non memorizza credenziali, cookie o foto. SQLite può creare anche file `-wal` e `-shm`: sono normali file di servizio, da non eliminare mentre il bot è aperto. Fermalo prima di copiare tutta la cartella `.data` per un backup. Gli spazi delle righe cancellate possono essere riutilizzati: il file non deve necessariamente ridursi di dimensione dopo la pulizia. Usa una sola istanza del bot per archivio, perché il Set in memoria non coordina processi diversi. Alcune versioni Node mostrano un avviso ExperimentalWarning per SQLite: non è un errore del bot.
+
+Se SQLite non è disponibile o l'archivio è corrotto, l'avvio si ferma senza cancellarlo. Se una scrittura fallisce durante il lavoro, l'ID resta in memoria e viene ritentato il salvataggio prima del controllo successivo. Un arresto prima del salvataggio può ancora causare una notifica ripetuta.
+
+### Migrazione dal vecchio JSON
+
+La prima apertura del database importa automaticamente `.data/notified.json` se presente. Conserva ID e date, esclude quelli scaduti e lascia intatto il JSON originale come backup. Il marcatore di migrazione è salvato nella stessa transazione: il JSON non viene riletto a ogni riavvio e non ripristina gli ID scaduti.
+
+Se il tuo `.env` contiene ancora `NOTIFIED_FILE=.data/notified.json`, puoi mantenerlo: il bot usa `.data/notified.sqlite` e importa quel JSON. Per percorsi personalizzati usa lo stesso nome base (`archivio.json` → `archivio.sqlite`). Trasferisci il vecchio JSON prima del primo avvio della versione SQLite. Se è corrotto la migrazione si ferma, senza sovrascriverlo; dopo averlo corretto può riprendere.
 
 ## Aggiornare dalla versione precedente su Windows
 
 1. Ferma il bot con Ctrl+C.
 2. Scarica il nuovo ZIP da GitHub ed estrailo in una cartella diversa.
-3. Dalla nuova cartella copia `bot.js`, `notified-store.js`, `searches.example.json` e `README.md` nella tua cartella attuale. Non sostituire `.env`; conserva anche `.data` e `searches.json`, se presenti. Le dipendenze non sono cambiate.
+3. Dalla nuova cartella copia `bot.js`, `notified-store.js`, `searches.example.json` e `README.md` nella tua cartella attuale. Non sostituire `.env`; conserva anche `.data` e `searches.json`, se presenti. Le dipendenze non sono cambiate, ma ora serve Node almeno 22.13; il tuo Node 24 è compatibile.
 4. Per più ricerche, crea `searches.json` e configura `SEARCHES_FILE` come sopra. Non ricopiare il modello su un file di ricerche già personalizzato.
 5. Esegui `node bot.js --check` per verificare tutte le ricerche senza Telegram, poi `npm start`.
 
-Al primo avvio di questa versione manca lo storico della versione precedente, che era solo in memoria: alcuni annunci saranno notificati di nuovo. Da questo momento il registro persiste. Se aggiorni sostituendo tutta la cartella, trasferisci `.env`, `searches.json` e `.data` e reinstalla con `npm ci`.
+Se provieni dalla versione con JSON, lo storico viene migrato automaticamente. Se provieni dalla prima versione con il solo Set in memoria, lo storico non è recuperabile e alcuni annunci saranno notificati di nuovo. Se aggiorni sostituendo tutta la cartella, trasferisci `.env`, `searches.json` e l'intera `.data`, poi reinstalla con `npm ci`.
 
 ## Come selezionare possibili occasioni
 
